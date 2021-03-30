@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import psutil
 import re
 import sys
 from dataclasses import dataclass, field
@@ -456,16 +457,33 @@ def main():
 
     #resampler = torchaudio.transforms.Resample(48_000, 16_000)
 
+    speech = {}
+    audio_paths = set()
+    for utt in na_dataset['train']:
+        audio_paths.add(utt['path'])
+    for utt in na_dataset['dev']:
+        audio_paths.add(utt['path'])
+    for utt in na_dataset['test']:
+        audio_paths.add(utt['path'])
+
+    for path in audio_paths:
+        speech_array, sampling_rate = torchaudio.load(path)
+        resampler = torchaudio.transforms.Resample(sampling_rate, 16_000)
+        speech[path] = resampler(speech_array).squeeze().numpy()
+        #speech[path] = torchaudio.load(path)
+
     # Preprocessing the datasets.
     # We need to read the aduio files as arrays and tokenize the targets.
     def speech_file_to_array_fn(batch):
-        speech_array, sampling_rate = torchaudio.load(batch["path"])
-        resampler = torchaudio.transforms.Resample(sampling_rate, 16_000)
-        speech_array[:, int((batch['start_ms']/1000)*sampling_rate):int((batch['stop_ms']/1000)*sampling_rate)]
-        batch["speech"] = resampler(speech_array).squeeze().numpy()
+        #speech_array, sampling_rate = torchaudio.load(batch["path"])
+        #process = psutil.Process(os.getpid())
+        #print(process.memory_info().rss)
         batch["sampling_rate"] = 16_000
+        batch["speech"] = speech[batch['path']][int((batch['start_ms']/1000)*batch['sampling_rate']):int((batch['stop_ms']/1000)*batch['sampling_rate'])]
         batch["target_text"] = batch["text"]
         return batch
+
+
 
     """
     train_dataset = train_dataset.map(
@@ -480,27 +498,12 @@ def main():
     )
     """
 
-    """
     na_dataset = na_dataset.map(
         speech_file_to_array_fn,
         remove_columns=na_dataset['train'].column_names,
         num_proc=data_args.preprocessing_num_workers,
     )
-    """
-
-    na_test_dataset = na_dataset['test'].map(
-        speech_file_to_array_fn,
-        remove_columns=na_dataset['test'].column_names,
-        num_proc=data_args.preprocessing_num_workers,
-    )
     import pdb; pdb.set_trace()
-    """
-    na_train_dataset = na_dataset['train'].map(
-        speech_file_to_array_fn,
-        remove_columns=na_dataset['train'].column_names,
-        num_proc=data_args.preprocessing_num_workers,
-    )
-    """
 
     def prepare_dataset(batch):
         # check that all files have the correct sampling rate
