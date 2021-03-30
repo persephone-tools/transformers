@@ -320,10 +320,62 @@ def main():
     train_dataset = train_dataset.map(remove_special_characters, remove_columns=["sentence"])
     eval_dataset = eval_dataset.map(remove_special_characters, remove_columns=["sentence"])
 
+    from pathlib import Path
+    data_dir = Path('na-elpis/e919e6c711e2c6abee5a17f82bebe850')
+
+    def create_split(elpis_annotations_fn=(data_dir / 'annotations.json')):
+        """ Create annotations files for the train/dev/test splits. """
+        with open(elpis_annotations_fn) as f:
+            anno_json = json.load(f)
+
+        from sklearn.model_selection import train_test_split
+
+        train_annos, devtest_annos = train_test_split(anno_json, test_size=0.2)
+        dev_annos, test_annos = train_test_split(devtest_annos, test_size=0.5)
+
+        # TODO Look into using HF Datasets splits to make this more idiomatic.
+        with open('train.json', 'w') as f:
+            json.dump({'data': train_annos}, f)
+        with open('dev.json', 'w') as f:
+            json.dump({'data': dev_annos}, f)
+        with open('test.json', 'w') as f:
+            json.dump({'data': test_annos}, f)
+
+    create_split()
+
+    def get_na_dataset():
+        ds = datasets.load_dataset('json',
+                                   data_files={'train': 'train.json',
+                                               'dev': 'dev.json',
+                                               'test': 'test.json'},
+                                   field='data')
+        #train_ds = ds['train']
+        #dev_ds = ds['dev']
+        #test_ds = ds['test']
+        def make_text_col(batch):
+            batch["text"] = batch['transcript']
+            batch["path"] = str(data_dir / 'original' / batch['audio_file_name'])
+            return batch
+        #train_ds = train_ds.map(make_text_col, remove_columns=['transcript'])
+        #dev_ds = dev_ds.map(make_text_col, remove_columns=['transcript'])
+        #train_ds = test_ds.map(make_text_col, remove_columns=['transcript'])
+        ds = ds.map(make_text_col, remove_columns=['transcript', 'audio_file_name'])
+        return ds
+
+    na_dataset = get_na_dataset()
+
     def extract_all_chars(batch):
         all_text = " ".join(batch["text"])
         vocab = list(set(all_text))
         return {"vocab": [vocab], "all_text": [all_text]}
+
+    vocab_na = na_dataset['train'].map(
+        extract_all_chars,
+        batched=True,
+        batch_size=-1,
+        keep_in_memory=True,
+        remove_columns=na_dataset['train'].column_names,
+    )
 
     vocab_train = train_dataset.map(
         extract_all_chars,
@@ -347,8 +399,18 @@ def main():
     vocab_dict["[UNK]"] = len(vocab_dict)
     vocab_dict["[PAD]"] = len(vocab_dict)
 
+    na_vocab_list = list(set(vocab_na["vocab"][0]))
+    na_vocab_dict = {v: k for k, v in enumerate(na_vocab_list)}
+    na_vocab_dict["|"] = na_vocab_dict[" "]
+    del na_vocab_dict[" "]
+    na_vocab_dict["[UNK]"] = len(na_vocab_dict)
+    na_vocab_dict["[PAD]"] = len(na_vocab_dict)
+
     with open("vocab.json", "w") as vocab_file:
         json.dump(vocab_dict, vocab_file)
+
+    with open("na_vocab.json", "w") as vocab_file:
+        json.dump(na_vocab_dict, vocab_file)
 
     # Load pretrained model and tokenizer
     #
@@ -365,6 +427,11 @@ def main():
         feature_size=1, sampling_rate=16_000, padding_value=0.0, do_normalize=True, return_attention_mask=True
     )
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+
+    na_tokenizer = Wav2Vec2CTCTokenizer(
+        'na_vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
+    na_processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+
     model = Wav2Vec2ForCTC.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
@@ -377,7 +444,7 @@ def main():
         layerdrop=model_args.layerdrop,
         ctc_loss_reduction="mean",
         pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(processor.tokenizer),
+        vocab_size=len(na_processor.tokenizer),
     )
 
     if data_args.max_train_samples is not None:
@@ -386,17 +453,21 @@ def main():
     if data_args.max_val_samples is not None:
         eval_dataset = eval_dataset.select(range(data_args.max_val_samples))
 
-    resampler = torchaudio.transforms.Resample(48_000, 16_000)
+
+    #resampler = torchaudio.transforms.Resample(48_000, 16_000)
 
     # Preprocessing the datasets.
     # We need to read the aduio files as arrays and tokenize the targets.
     def speech_file_to_array_fn(batch):
         speech_array, sampling_rate = torchaudio.load(batch["path"])
+        resampler = torchaudio.transforms.Resample(sampling_rate, 16_000)
+        speech_array[:, int((batch['start_ms']/1000)*sampling_rate):int((batch['stop_ms']/1000)*sampling_rate)]
         batch["speech"] = resampler(speech_array).squeeze().numpy()
         batch["sampling_rate"] = 16_000
         batch["target_text"] = batch["text"]
         return batch
 
+    """
     train_dataset = train_dataset.map(
         speech_file_to_array_fn,
         remove_columns=train_dataset.column_names,
@@ -407,6 +478,29 @@ def main():
         remove_columns=eval_dataset.column_names,
         num_proc=data_args.preprocessing_num_workers,
     )
+    """
+
+    """
+    na_dataset = na_dataset.map(
+        speech_file_to_array_fn,
+        remove_columns=na_dataset['train'].column_names,
+        num_proc=data_args.preprocessing_num_workers,
+    )
+    """
+
+    na_test_dataset = na_dataset['test'].map(
+        speech_file_to_array_fn,
+        remove_columns=na_dataset['test'].column_names,
+        num_proc=data_args.preprocessing_num_workers,
+    )
+    import pdb; pdb.set_trace()
+    """
+    na_train_dataset = na_dataset['train'].map(
+        speech_file_to_array_fn,
+        remove_columns=na_dataset['train'].column_names,
+        num_proc=data_args.preprocessing_num_workers,
+    )
+    """
 
     def prepare_dataset(batch):
         # check that all files have the correct sampling rate
