@@ -2,7 +2,6 @@
 import json
 import logging
 import os
-import psutil
 import re
 import sys
 from dataclasses import dataclass, field
@@ -350,16 +349,11 @@ def main():
                                                'dev': 'dev.json',
                                                'test': 'test.json'},
                                    field='data')
-        #train_ds = ds['train']
-        #dev_ds = ds['dev']
-        #test_ds = ds['test']
+
         def make_text_col(batch):
             batch["text"] = batch['transcript']
             batch["path"] = str(data_dir / 'original' / batch['audio_file_name'])
             return batch
-        #train_ds = train_ds.map(make_text_col, remove_columns=['transcript'])
-        #dev_ds = dev_ds.map(make_text_col, remove_columns=['transcript'])
-        #train_ds = test_ds.map(make_text_col, remove_columns=['transcript'])
         ds = ds.map(make_text_col, remove_columns=['transcript', 'audio_file_name'])
         return ds
 
@@ -431,7 +425,7 @@ def main():
 
     na_tokenizer = Wav2Vec2CTCTokenizer(
         'na_vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
-    na_processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    na_processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=na_tokenizer)
 
     model = Wav2Vec2ForCTC.from_pretrained(
         model_args.model_name_or_path,
@@ -453,9 +447,6 @@ def main():
 
     if data_args.max_val_samples is not None:
         eval_dataset = eval_dataset.select(range(data_args.max_val_samples))
-
-
-    #resampler = torchaudio.transforms.Resample(48_000, 16_000)
 
     speech = {}
     audio_paths = set()
@@ -483,8 +474,6 @@ def main():
         batch["target_text"] = batch["text"]
         return batch
 
-
-
     """
     train_dataset = train_dataset.map(
         speech_file_to_array_fn,
@@ -503,7 +492,6 @@ def main():
         remove_columns=na_dataset['train'].column_names,
         num_proc=data_args.preprocessing_num_workers,
     )
-    import pdb; pdb.set_trace()
 
     def prepare_dataset(batch):
         # check that all files have the correct sampling rate
@@ -515,6 +503,14 @@ def main():
         with processor.as_target_processor():
             batch["labels"] = processor(batch["target_text"]).input_ids
         return batch
+
+    na_dataset = na_dataset.map(
+        prepare_dataset,
+        remove_columns=na_dataset['train'].column_names,
+        batch_size=training_args.per_device_train_batch_size,
+        batched=True,
+        num_proc=data_args.preprocessing_num_workers,
+    )
 
     train_dataset = train_dataset.map(
         prepare_dataset,
