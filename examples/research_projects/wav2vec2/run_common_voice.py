@@ -472,6 +472,8 @@ def main():
         batch["sampling_rate"] = 16_000
         batch["speech"] = speech[batch['path']][int((batch['start_ms']/1000)*batch['sampling_rate']):int((batch['stop_ms']/1000)*batch['sampling_rate'])]
         batch["target_text"] = batch["text"]
+        batch['duration'] = (batch['stop_ms'] - batch['start_ms'])/1000
+        batch['duration'] = len(batch['speech'])/batch['sampling_rate']
         return batch
 
     """
@@ -492,6 +494,9 @@ def main():
         remove_columns=na_dataset['train'].column_names,
         num_proc=data_args.preprocessing_num_workers,
     )
+
+    durs = sorted(utt['duration'] for utt in na_dataset['train'])
+    #import pdb; pdb.set_trace()
 
     def prepare_dataset(batch):
         # check that all files have the correct sampling rate
@@ -527,6 +532,8 @@ def main():
         num_proc=data_args.preprocessing_num_workers,
     )
 
+    import pdb; pdb.set_trace()
+
     # Metric
     wer_metric = datasets.load_metric("wer")
 
@@ -549,16 +556,17 @@ def main():
 
     # Data collator
     data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+    na_data_collator = DataCollatorCTCWithPadding(processor=na_processor, padding=True)
 
     # Initialize our Trainer
     trainer = CTCTrainer(
         model=model,
-        data_collator=data_collator,
+        data_collator=na_data_collator,
         args=training_args,
         compute_metrics=compute_metrics,
-        train_dataset=train_dataset if training_args.do_train else None,
-        eval_dataset=eval_dataset if training_args.do_eval else None,
-        tokenizer=processor.feature_extractor,
+        train_dataset=na_dataset['train'] if training_args.do_train else None,
+        eval_dataset=na_dataset['dev'] if training_args.do_eval else None,
+        tokenizer=na_processor.feature_extractor,
     )
 
     # Training
