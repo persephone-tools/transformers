@@ -330,8 +330,8 @@ def main():
 
         from sklearn.model_selection import train_test_split
 
-        train_annos, devtest_annos = train_test_split(anno_json, test_size=0.2)
-        dev_annos, test_annos = train_test_split(devtest_annos, test_size=0.5)
+        train_annos, devtest_annos = train_test_split(anno_json, test_size=0.2, random_state=42)
+        dev_annos, test_annos = train_test_split(devtest_annos, test_size=0.5, random_state=42)
 
         # TODO Look into using HF Datasets splits to make this more idiomatic.
         with open('train.json', 'w') as f:
@@ -496,7 +496,6 @@ def main():
     )
 
     durs = sorted(utt['duration'] for utt in na_dataset['train'])
-    #import pdb; pdb.set_trace()
 
     def prepare_dataset(batch):
         # check that all files have the correct sampling rate
@@ -517,6 +516,7 @@ def main():
         num_proc=data_args.preprocessing_num_workers,
     )
 
+    """
     train_dataset = train_dataset.map(
         prepare_dataset,
         remove_columns=train_dataset.column_names,
@@ -531,8 +531,7 @@ def main():
         batched=True,
         num_proc=data_args.preprocessing_num_workers,
     )
-
-    import pdb; pdb.set_trace()
+    """
 
     # Metric
     wer_metric = datasets.load_metric("wer")
