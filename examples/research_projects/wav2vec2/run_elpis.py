@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
@@ -495,6 +496,14 @@ def main():
         # we do not want to group tokens when computing the metrics
         label_str = processor.batch_decode(pred.label_ids, group_tokens=False)
 
+        time_str = time.strftime('%Y-%m-%d_%H:%M', time.localtime())
+        with open(training_args.output_dir + f'/dev_preds{time_str}.txt', 'w') as f:
+            for pred, ref in zip(pred_str, label_str):
+                print('----------------------------------------')
+                print('HYP:')
+                print(pred)
+                print('REF:')
+                print(ref)
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
 
         return {"wer": wer}

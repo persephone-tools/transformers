@@ -13,8 +13,8 @@ python transformers/examples/research_projects/wav2vec2/run_elpis.py \
 	--learning_rate="3e-4" \
 	--warmup_steps="500" \
 	--evaluation_strategy="steps" \
-	--save_steps="1000" \
-	--eval_steps="1000" \
+	--save_steps="400" \
+	--eval_steps="400" \
 	--logging_steps="400" \
 	--save_total_limit="3" \
 	--freeze_feature_extractor \
