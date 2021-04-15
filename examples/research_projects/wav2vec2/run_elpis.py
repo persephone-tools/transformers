@@ -499,11 +499,11 @@ def main():
         time_str = time.strftime('%Y-%m-%d_%H:%M', time.localtime())
         with open(training_args.output_dir + f'/dev_preds{time_str}.txt', 'w') as f:
             for pred, ref in zip(pred_str, label_str):
-                print('----------------------------------------')
-                print('HYP:')
-                print(pred)
-                print('REF:')
-                print(ref)
+                print('----------------------------------------', file=f)
+                print('HYP:', file=f)
+                print(pred, file=f)
+                print('REF:', file=f)
+                print(ref, file=f)
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
 
         return {"wer": wer}
