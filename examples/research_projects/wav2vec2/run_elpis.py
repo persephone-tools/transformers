@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import logging
+from pathlib import Path
 import os
 import re
 import sys
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import datasets
 import numpy as np
+from sklearn.model_selection import train_test_split
 import torch
 import torchaudio
 from packaging import version
@@ -103,6 +105,15 @@ class DataTrainingArguments:
     the command line.
     """
 
+    elpis_data_dir: str = field(
+        metadata={"help": "The path to the directory containing Elpis-preprocessed data."}
+    )
+    train_size: Optional[float] = field(
+        default=0.8, metadata={"help": "The fraction of the data used for training. The rest is split evenly between the dev and test sets."}
+    )
+    split_seed: Optional[int] = field(
+        default=42, metadata={"help": "The random seed used to create the train/dev/test splits."}
+    )
     dataset_config_name: Optional[str] = field(
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
@@ -320,34 +331,36 @@ def main():
     train_dataset = train_dataset.map(remove_special_characters, remove_columns=["sentence"])
     eval_dataset = eval_dataset.map(remove_special_characters, remove_columns=["sentence"])
 
-    from pathlib import Path
-    data_dir = Path('na-elpis/e919e6c711e2c6abee5a17f82bebe850')
+    data_dir = Path(data_args.elpis_data_dir)
 
-    def create_split(elpis_annotations_fn=(data_dir / 'annotations.json')):
+    def create_split(data_dir):
         """ Create annotations files for the train/dev/test splits. """
+
+        elpis_annotations_fn=(data_dir / 'annotations.json')
         with open(elpis_annotations_fn) as f:
             anno_json = json.load(f)
 
-        from sklearn.model_selection import train_test_split
+        train_annos, devtest_annos = train_test_split(anno_json, test_size=(1-data_args.train_size), random_state=data_args.split_seed)
+        dev_annos, test_annos = train_test_split(devtest_annos, test_size=0.5, random_state=data_args.split_seed)
 
-        train_annos, devtest_annos = train_test_split(anno_json, test_size=0.2, random_state=42)
-        dev_annos, test_annos = train_test_split(devtest_annos, test_size=0.5, random_state=42)
+        split_dir = data_dir / 'splits'
+        split_dir.mkdir(exist_ok=True)
 
-        # TODO Look into using HF Datasets splits to make this more idiomatic.
-        with open('train.json', 'w') as f:
+        with open(split_dir / 'train.json', 'w') as f:
             json.dump({'data': train_annos}, f)
-        with open('dev.json', 'w') as f:
+        with open(split_dir / 'dev.json', 'w') as f:
             json.dump({'data': dev_annos}, f)
-        with open('test.json', 'w') as f:
+        with open(split_dir / 'test.json', 'w') as f:
             json.dump({'data': test_annos}, f)
 
-    create_split()
+    create_split(data_dir)
 
-    def get_na_dataset():
+    def get_dataset(data_dir):
+        split_dir = data_dir / 'splits'
         ds = datasets.load_dataset('json',
-                                   data_files={'train': 'train.json',
-                                               'dev': 'dev.json',
-                                               'test': 'test.json'},
+                                   data_files={'train': str(split_dir / 'train.json'),
+                                               'dev': str(split_dir /'dev.json'),
+                                               'test': str(split_dir / 'test.json')},
                                    field='data')
 
         def make_text_col(batch):
@@ -357,55 +370,30 @@ def main():
         ds = ds.map(make_text_col, remove_columns=['transcript', 'audio_file_name'])
         return ds
 
-    na_dataset = get_na_dataset()
+    dataset = get_dataset(data_dir)
 
     def extract_all_chars(batch):
         all_text = " ".join(batch["text"])
         vocab = list(set(all_text))
         return {"vocab": [vocab], "all_text": [all_text]}
 
-    vocab_na = na_dataset['train'].map(
+    vocab = dataset['train'].map(
         extract_all_chars,
         batched=True,
         batch_size=-1,
         keep_in_memory=True,
-        remove_columns=na_dataset['train'].column_names,
+        remove_columns=dataset['train'].column_names,
     )
 
-    vocab_train = train_dataset.map(
-        extract_all_chars,
-        batched=True,
-        batch_size=-1,
-        keep_in_memory=True,
-        remove_columns=train_dataset.column_names,
-    )
-    vocab_test = train_dataset.map(
-        extract_all_chars,
-        batched=True,
-        batch_size=-1,
-        keep_in_memory=True,
-        remove_columns=eval_dataset.column_names,
-    )
-
-    vocab_list = list(set(vocab_train["vocab"][0]) | set(vocab_test["vocab"][0]))
+    vocab_list = list(set(vocab["vocab"][0]))
     vocab_dict = {v: k for k, v in enumerate(vocab_list)}
     vocab_dict["|"] = vocab_dict[" "]
     del vocab_dict[" "]
     vocab_dict["[UNK]"] = len(vocab_dict)
     vocab_dict["[PAD]"] = len(vocab_dict)
 
-    na_vocab_list = list(set(vocab_na["vocab"][0]))
-    na_vocab_dict = {v: k for k, v in enumerate(na_vocab_list)}
-    na_vocab_dict["|"] = na_vocab_dict[" "]
-    del na_vocab_dict[" "]
-    na_vocab_dict["[UNK]"] = len(na_vocab_dict)
-    na_vocab_dict["[PAD]"] = len(na_vocab_dict)
-
     with open("vocab.json", "w") as vocab_file:
         json.dump(vocab_dict, vocab_file)
-
-    with open("na_vocab.json", "w") as vocab_file:
-        json.dump(na_vocab_dict, vocab_file)
 
     # Load pretrained model and tokenizer
     #
@@ -413,19 +401,11 @@ def main():
     # The .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     tokenizer = Wav2Vec2CTCTokenizer(
-        "vocab.json",
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        word_delimiter_token="|",
-    )
+        'vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
     feature_extractor = Wav2Vec2FeatureExtractor(
         feature_size=1, sampling_rate=16_000, padding_value=0.0, do_normalize=True, return_attention_mask=True
     )
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
-
-    na_tokenizer = Wav2Vec2CTCTokenizer(
-        'na_vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
-    na_processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=na_tokenizer)
 
     model = Wav2Vec2ForCTC.from_pretrained(
         model_args.model_name_or_path,
@@ -439,7 +419,7 @@ def main():
         layerdrop=model_args.layerdrop,
         ctc_loss_reduction="mean",
         pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(na_processor.tokenizer),
+        vocab_size=len(processor.tokenizer),
     )
 
     if data_args.max_train_samples is not None:
@@ -450,18 +430,17 @@ def main():
 
     speech = {}
     audio_paths = set()
-    for utt in na_dataset['train']:
+    for utt in dataset['train']:
         audio_paths.add(utt['path'])
-    for utt in na_dataset['dev']:
+    for utt in dataset['dev']:
         audio_paths.add(utt['path'])
-    for utt in na_dataset['test']:
+    for utt in dataset['test']:
         audio_paths.add(utt['path'])
 
     for path in audio_paths:
         speech_array, sampling_rate = torchaudio.load(path)
         resampler = torchaudio.transforms.Resample(sampling_rate, 16_000)
         speech[path] = resampler(speech_array).squeeze().numpy()
-        #speech[path] = torchaudio.load(path)
 
     # Preprocessing the datasets.
     # We need to read the aduio files as arrays and tokenize the targets.
@@ -476,62 +455,32 @@ def main():
         batch['duration'] = len(batch['speech'])/batch['sampling_rate']
         return batch
 
-    """
-    train_dataset = train_dataset.map(
+    dataset = dataset.map(
         speech_file_to_array_fn,
-        remove_columns=train_dataset.column_names,
-        num_proc=data_args.preprocessing_num_workers,
-    )
-    eval_dataset = eval_dataset.map(
-        speech_file_to_array_fn,
-        remove_columns=eval_dataset.column_names,
-        num_proc=data_args.preprocessing_num_workers,
-    )
-    """
-
-    na_dataset = na_dataset.map(
-        speech_file_to_array_fn,
-        remove_columns=na_dataset['train'].column_names,
+        remove_columns=dataset['train'].column_names,
         num_proc=data_args.preprocessing_num_workers,
     )
 
-    durs = sorted(utt['duration'] for utt in na_dataset['train'])
+    durs = sorted(utt['duration'] for utt in dataset['train'])
 
     def prepare_dataset(batch):
         # check that all files have the correct sampling rate
         assert (
             len(set(batch["sampling_rate"])) == 1
         ), f"Make sure all inputs have the same sampling rate of {processor.feature_extractor.sampling_rate}."
-        batch["input_values"] = na_processor(batch["speech"], sampling_rate=batch["sampling_rate"][0]).input_values
+        batch["input_values"] = processor(batch["speech"], sampling_rate=batch["sampling_rate"][0]).input_values
         # Setup the processor for targets
-        with na_processor.as_target_processor():
-            batch["labels"] = na_processor(batch["target_text"]).input_ids
+        with processor.as_target_processor():
+            batch["labels"] = processor(batch["target_text"]).input_ids
         return batch
 
-    na_dataset = na_dataset.map(
+    dataset = dataset.map(
         prepare_dataset,
-        remove_columns=na_dataset['train'].column_names,
+        remove_columns=dataset['train'].column_names,
         batch_size=training_args.per_device_train_batch_size,
         batched=True,
         num_proc=data_args.preprocessing_num_workers,
     )
-
-    """
-    train_dataset = train_dataset.map(
-        prepare_dataset,
-        remove_columns=train_dataset.column_names,
-        batch_size=training_args.per_device_train_batch_size,
-        batched=True,
-        num_proc=data_args.preprocessing_num_workers,
-    )
-    eval_dataset = eval_dataset.map(
-        prepare_dataset,
-        remove_columns=eval_dataset.column_names,
-        batch_size=training_args.per_device_train_batch_size,
-        batched=True,
-        num_proc=data_args.preprocessing_num_workers,
-    )
-    """
 
     # Metric
     wer_metric = datasets.load_metric("wer")
@@ -540,11 +489,11 @@ def main():
         pred_logits = pred.predictions
         pred_ids = np.argmax(pred_logits, axis=-1)
 
-        pred.label_ids[pred.label_ids == -100] = na_processor.tokenizer.pad_token_id
+        pred.label_ids[pred.label_ids == -100] = processor.tokenizer.pad_token_id
 
-        pred_str = na_processor.batch_decode(pred_ids)
+        pred_str = processor.batch_decode(pred_ids)
         # we do not want to group tokens when computing the metrics
-        label_str = na_processor.batch_decode(pred.label_ids, group_tokens=False)
+        label_str = processor.batch_decode(pred.label_ids, group_tokens=False)
 
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
 
@@ -554,18 +503,17 @@ def main():
         model.freeze_feature_extractor()
 
     # Data collator
-    #data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
-    na_data_collator = DataCollatorCTCWithPadding(processor=na_processor, padding=True)
+    data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
 
     # Initialize our Trainer
     trainer = CTCTrainer(
         model=model,
-        data_collator=na_data_collator,
+        data_collator=data_collator,
         args=training_args,
         compute_metrics=compute_metrics,
-        train_dataset=na_dataset['train'] if training_args.do_train else None,
-        eval_dataset=na_dataset['dev'] if training_args.do_eval else None,
-        tokenizer=na_processor.feature_extractor,
+        train_dataset=dataset['train'] if training_args.do_train else None,
+        eval_dataset=dataset['dev'] if training_args.do_eval else None,
+        tokenizer=processor.feature_extractor,
     )
 
     # Training
@@ -581,7 +529,7 @@ def main():
 
         # save the feature_extractor and the tokenizer
         if is_main_process(training_args.local_rank):
-            na_processor.save_pretrained(training_args.output_dir)
+            processor.save_pretrained(training_args.output_dir)
 
         metrics = train_result.metrics
         max_train_samples = (
