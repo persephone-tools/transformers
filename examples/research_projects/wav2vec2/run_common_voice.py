@@ -502,10 +502,10 @@ def main():
         assert (
             len(set(batch["sampling_rate"])) == 1
         ), f"Make sure all inputs have the same sampling rate of {processor.feature_extractor.sampling_rate}."
-        batch["input_values"] = processor(batch["speech"], sampling_rate=batch["sampling_rate"][0]).input_values
+        batch["input_values"] = na_processor(batch["speech"], sampling_rate=batch["sampling_rate"][0]).input_values
         # Setup the processor for targets
-        with processor.as_target_processor():
-            batch["labels"] = processor(batch["target_text"]).input_ids
+        with na_processor.as_target_processor():
+            batch["labels"] = na_processor(batch["target_text"]).input_ids
         return batch
 
     na_dataset = na_dataset.map(
@@ -540,11 +540,11 @@ def main():
         pred_logits = pred.predictions
         pred_ids = np.argmax(pred_logits, axis=-1)
 
-        pred.label_ids[pred.label_ids == -100] = processor.tokenizer.pad_token_id
+        pred.label_ids[pred.label_ids == -100] = na_processor.tokenizer.pad_token_id
 
-        pred_str = processor.batch_decode(pred_ids)
+        pred_str = na_processor.batch_decode(pred_ids)
         # we do not want to group tokens when computing the metrics
-        label_str = processor.batch_decode(pred.label_ids, group_tokens=False)
+        label_str = na_processor.batch_decode(pred.label_ids, group_tokens=False)
 
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
 
@@ -554,7 +554,7 @@ def main():
         model.freeze_feature_extractor()
 
     # Data collator
-    data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+    #data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
     na_data_collator = DataCollatorCTCWithPadding(processor=na_processor, padding=True)
 
     # Initialize our Trainer
@@ -581,7 +581,7 @@ def main():
 
         # save the feature_extractor and the tokenizer
         if is_main_process(training_args.local_rank):
-            processor.save_pretrained(training_args.output_dir)
+            na_processor.save_pretrained(training_args.output_dir)
 
         metrics = train_result.metrics
         max_train_samples = (
