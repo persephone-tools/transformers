@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Set, Optional, Union, Callable
 
 import datasets
 import numpy as np
@@ -31,6 +31,71 @@ from transformers import (
 )
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 
+#### Language-specific data (here Na). It should be available from Elpis in a way or another. Maybe put these data lines in a file for simulation and better readability of this file…
+
+UNI_PHNS = {'q', 'p', 'ɭ', 'ɳ', 'h', 'ʐ', 'n', 'o', 'ɤ', 'ʝ', 'ɛ', 'g',
+            'i', 'u', 'b', 'ɔ', 'ɯ', 'v', 'ɑ', 'l', 'ɖ', 'ɻ', 'ĩ', 'm',
+            't', 'w', 'õ', 'ẽ', 'd', 'ɣ', 'ɕ', 'c', 'ʁ', 'ʑ', 'ʈ', 'ɲ', 'ɬ',
+            's', 'ŋ', 'ə', 'e', 'æ', 'f', 'j', 'k', 'z', 'ʂ'}
+BI_PHNS = {'dʑ', 'ẽ', 'ɖʐ', 'w̃', 'æ̃', 'qʰ', 'i͂', 'tɕ', 'v̩', 'o̥', 'ts',
+           'ɻ̩', 'ã', 'ə̃', 'ṽ', 'pʰ', 'tʰ', 'ɤ̃', 'ʈʰ', 'ʈʂ', 'ɑ̃', 'ɻ̃', 'kʰ',
+           'ĩ', 'õ', 'dz', "ɻ̍", "wæ", "wɑ", "wɤ", "jæ", "jɤ", "jo", "ʋ̩"}
+FILLERS = {"əəə…", "mmm…"}
+TRI_PHNS = {"tɕʰ", "ʈʂʰ", "tsʰ", "ṽ̩", "ṽ̩", "ɻ̩̃", "wæ̃", "w̃æ", "ʋ̩̃", "ɻ̩̃"}
+UNI_TONES = {"˩", "˥", "˧"}
+BI_TONES = {"˧˥", "˩˥", "˩˧", "˧˩"}
+MISC_SYMBOLS = {' ̩', '~', '=', ':', 'F', '¨', '↑', '“', '”', '…', '«', '»', 'D', 'a', 'ː', '#', '$', "‡", "˞"}
+BAD_NA_SYMBOLS = {'D', 'F', '~', '…', '=', '↑', ':'}
+PUNC_SYMBOLS = {',', '!', '.', ';', '?', "'", '"', '*', ':', '«', '»', '“', '”', "ʔ", "+", "-", "<", ">", "/"}
+
+graphemes = UNI_PHNS|BI_PHNS|TRI_PHNS|FILLERS|UNI_TONES|BI_TONES
+removable_symbols = MISC_SYMBOLS|BAD_NA_SYMBOLS|PUNC_SYMBOLS  # Should be done by Elpis preprocessing…
+
+class ElpisTokenizer(Wav2Vec2CTCTokenizer):
+    """
+    Special subclass to manage specific cases, like tokenization of variable-sized graphemes…
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pattern: re.Pattern = self.get_pattern()
+
+    def get_pattern(self) -> re.Pattern:
+        exclusion_pattern = "|".join([self.unk_token, self.bos_token, self.eos_token, self.pad_token])
+        exclusion_pattern = re.sub(r"(\[|/)", r"\\\g<1>", exclusion_pattern)
+        print("TOK – exclusion pattern:", exclusion_pattern)
+        graphemes = [key for key in self.encoder.keys() if not re.match(exclusion_pattern, key, re.I)]
+        print("TOK – graphemes:", graphemes)
+        pattern = re.compile("|".join(sorted(graphemes, key=lambda grapheme: len(grapheme), reverse=True)))
+        print("TOK – tokenization pattern:", pattern)
+        return pattern
+
+    def _tokenize(self, text: str) -> List[str]:
+        """
+        Converts a string in a sequence of tokens (string), using the tokenizer.
+        """
+        if self.do_lower_case:
+            text = text.upper()
+        tokens = re.findall(self.pattern, text)
+        print("TOK – tokens:", tokens)
+        return tokens
+
+#############################################
+# Not sure if it is useful yet (the tokenizer function, later, will create a pattern with longest graphemes before the shortest ones, but maybe some linguists won’t give the graphemes in an classified way and this function could be useful for printing data or whatever…
+def classify_graphemes(graphemes: Union[List[str], Set[str]], by: Callable = len) -> Dict[int, List[str]]:
+    """
+    Returns a dict where keys are the criteria results of a function applied on graphemes, and values lists of graphemes under this criteria (length by default).
+    """
+    grapheme_dict = {}
+    for grapheme in graphemes:
+        grapheme_list = grapheme_dict.get(by(grapheme), [])
+        grapheme_list.append(grapheme)
+        grapheme_dict[by(grapheme)] = grapheme_list
+    return grapheme_dict
+
+graphemes_lengths = classify_graphemes(graphemes)
+print("graphemes lengths", graphemes_lengths)
+#############################################
+##############################################################################
 
 if is_apex_available():
     from apex import amp
@@ -386,12 +451,19 @@ def main():
         remove_columns=dataset['train'].column_names,
     )
 
-    vocab_list = list(set(vocab["vocab"][0]))
-    vocab_dict = {v: k for k, v in enumerate(vocab_list)}
-    vocab_dict["|"] = vocab_dict[" "]
-    del vocab_dict[" "]
+    # graphemes = None  # Toggle to compare.
+    # I think we could put this 10ish-line block into a function, but not sure yet where this should be (independant, class method)…
+    if graphemes:
+        vocab_dict = {token: token_id for token_id, token in enumerate(sorted(graphemes, key=len))}
+    else:
+        vocab_list = list(set(vocab["vocab"][0]))
+        vocab_dict = {v: k for k, v in enumerate(vocab_list)}
+        vocab_dict["|"] = vocab_dict[" "]
+        del vocab_dict[" "]
     vocab_dict["[UNK]"] = len(vocab_dict)
     vocab_dict["[PAD]"] = len(vocab_dict)
+
+    print("VOCAB:", vocab_dict)
 
     with open("vocab.json", "w") as vocab_file:
         json.dump(vocab_dict, vocab_file)
@@ -401,8 +473,13 @@ def main():
     # Distributed training:
     # The .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    tokenizer = Wav2Vec2CTCTokenizer(
+    tokenizer = ElpisTokenizer(
         'vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
+
+    print("RESULT:", tokenizer.tokenize("ʈʂʰæ˧~ʈʂʰæ˧"))
+
+    raise ## Tokenization test.
+
     feature_extractor = Wav2Vec2FeatureExtractor(
         feature_size=1, sampling_rate=16_000, padding_value=0.0, do_normalize=True, return_attention_mask=True
     )
@@ -455,6 +532,8 @@ def main():
         batch['duration'] = (batch['stop_ms'] - batch['start_ms'])/1000
         batch['duration'] = len(batch['speech'])/batch['sampling_rate']
         return batch
+
+    raise  ## The line under breaks for me…
 
     dataset = dataset.map(
         speech_file_to_array_fn,
