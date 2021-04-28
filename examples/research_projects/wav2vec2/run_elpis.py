@@ -106,8 +106,11 @@ class DataTrainingArguments:
     the command line.
     """
 
-    elpis_data_dir: str = field(
-        metadata={"help": "The path to the directory containing Elpis-preprocessed data."}
+    transcribe_wav: Optional[str] = field(
+        metadata={"help": "The path to the a wav to be decoded."}
+    )
+    elpis_data_dir: Optional[str] = field(
+        default=None, metadata={"help": "The path to the directory containing Elpis-preprocessed data."}
     )
     train_size: Optional[float] = field(
         default=0.8, metadata={"help": "The fraction of the data used for training. The rest is split evenly between the dev and test sets."}
@@ -267,6 +270,46 @@ class CTCTrainer(Trainer):
         return loss.detach()
 
 
+def decode(data_args, model_args):
+    # TODO Put vocab file somewhere else; perhaps in the model directory.
+    # TODO A lot of this code is duplicated from the main() function. Can there
+    # be better code reuse?
+    tokenizer = Wav2Vec2CTCTokenizer(
+        'vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
+    feature_extractor = Wav2Vec2FeatureExtractor(
+        feature_size=1, sampling_rate=16_000, padding_value=0.0, do_normalize=True, return_attention_mask=True
+    )
+    processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+
+    model = Wav2Vec2ForCTC.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
+        activation_dropout=model_args.activation_dropout,
+        attention_dropout=model_args.attention_dropout,
+        hidden_dropout=model_args.hidden_dropout,
+        feat_proj_dropout=model_args.feat_proj_dropout,
+        mask_time_prob=model_args.mask_time_prob,
+        gradient_checkpointing=model_args.gradient_checkpointing,
+        layerdrop=model_args.layerdrop,
+        ctc_loss_reduction="mean",
+        pad_token_id=processor.tokenizer.pad_token_id,
+        vocab_size=len(processor.tokenizer),
+    )
+    model.eval()
+
+    speech_array, sampling_rate = torchaudio.load(data_args.transcribe_wav)
+    resampler = torchaudio.transforms.Resample(sampling_rate, 16_000)
+    speech_array = resampler(speech_array)#.squeeze().numpy()
+
+    output = model(speech_array[:, :1000])
+
+    #pred_logits = pred.predictions
+    pred_ids = np.argmax(output.logits, axis=-1)
+
+    pred_str = processor.batch_decode(pred_ids)
+    import pdb; pdb.set_trace()
+
+
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -315,6 +358,12 @@ def main():
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
+
+    if data_args.transcribe_wav:
+        decode(data_args, model_args)
+        return
+
+    return
 
     # Get the datasets:
     train_dataset = datasets.load_dataset(
