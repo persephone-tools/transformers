@@ -431,7 +431,7 @@ def main():
 
         def make_text_col(batch):
             batch["text"] = batch['transcript']
-            batch["path"] = str(data_dir / 'original' / batch['audio_file_name'])
+            batch["path"] = str(data_dir / 'resampled' / batch['audio_file_name'])
             return batch
         ds = ds.map(make_text_col, remove_columns=['transcript', 'audio_file_name'])
         return ds
