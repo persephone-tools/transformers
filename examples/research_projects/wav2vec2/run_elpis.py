@@ -426,20 +426,30 @@ def main():
         return {"vocab": [vocab], "all_text": [all_text]}
 
     def create_vocabulary(dataset, language_data):
+        vocab = dataset['train'].map(
+            extract_all_chars,
+            batched=True,
+            batch_size=-1,
+            keep_in_memory=True,
+            remove_columns=dataset['train'].column_names,
+        )
+        vocab_list = list(set(vocab["vocab"][0]))
+        naive_vocab_dict = {v: k for k, v in enumerate(vocab_list)}
+        naive_vocab_dict["|"] = naive_vocab_dict[" "]
+        del naive_vocab_dict[" "]
         if language_data.get("graphemes"):
-           vocab_dict = {token: token_id for token_id, token in enumerate(sorted(language_data["graphemes"], key=len))}
+            intelligent_vocab_dict = {token: token_id for token_id, token in enumerate(sorted(language_data["graphemes"], key=len))}
+            naive_vocab_set = set(naive_vocab_dict)
+            intelligent_vocab_set = set("".join(intelligent_vocab_dict))
+            naive_specific_chars = naive_vocab_set - intelligent_vocab_set
+            intelligent_specific_chars = intelligent_vocab_set - naive_vocab_set
+            if naive_specific_chars:
+                logger.warning(f"""Characters present ({len(naive_specific_chars)}) in data but absent in language data: {" ".join(sorted(naive_specific_chars))}""")
+            if intelligent_specific_chars:
+                logger.warning(f"""Characters present ({len(intelligent_specific_chars)}) in language data but absent in data: {" ".join(sorted(intelligent_specific_chars))}""")
+            vocab_dict = intelligent_vocab_dict
         else:
-            vocab = dataset['train'].map(
-                extract_all_chars,
-                batched=True,
-                batch_size=-1,
-                keep_in_memory=True,
-                remove_columns=dataset['train'].column_names,
-            )
-            vocab_list = list(set(vocab["vocab"][0]))
-            vocab_dict = {v: k for k, v in enumerate(vocab_list)}
-            vocab_dict["|"] = vocab_dict[" "]
-            del vocab_dict[" "]
+            vocab_dict = naive_vocab_dict
         vocab_dict["[UNK]"] = len(vocab_dict)
         vocab_dict["[PAD]"] = len(vocab_dict)
         return vocab_dict
