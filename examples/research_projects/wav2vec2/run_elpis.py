@@ -42,11 +42,11 @@ class ElpisTokenizer(Wav2Vec2CTCTokenizer):
     def get_pattern(self) -> re.Pattern:
         exclusion_pattern = "|".join([self.unk_token, self.bos_token, self.eos_token, self.pad_token])
         exclusion_pattern = re.sub(r"(\[|/)", r"\\\g<1>", exclusion_pattern)
-        print("TOK – exclusion pattern:", exclusion_pattern)
+        logger.info(f"tokenizer – exclusion pattern: {exclusion_pattern}")
         graphemes = [key for key in self.encoder.keys() if not re.match(exclusion_pattern, key, re.I)]
-        print("TOK – graphemes:", graphemes)
+        logger.info(f"tokenizer – graphemes: {graphemes}")
         pattern = re.compile("|".join(sorted(graphemes, key=lambda grapheme: len(grapheme), reverse=True)))
-        print("TOK – tokenization pattern:", pattern)
+        logger.info(f"tokenizer – tokenization pattern: {pattern}")
         return pattern
 
     def _tokenize(self, text: str) -> List[str]:
@@ -56,7 +56,7 @@ class ElpisTokenizer(Wav2Vec2CTCTokenizer):
         if self.do_lower_case:
             text = text.upper()
         tokens = re.findall(self.pattern, text)
-        print("TOK – tokens:", tokens)
+        logger.info(f"tokenizer – tokens: {text} → {tokens}")
         return tokens
 
 #############################################
@@ -381,7 +381,7 @@ def main():
     if language_data_path.exists():
         with open(language_data_path) as fd:
             language_data = json.load(fd)
-        logger.info(language_data)
+        logger.info(f"Language data: {language_data}")
     else:
         language_data = None
 
@@ -472,7 +472,8 @@ def main():
     tokenizer = ElpisTokenizer(
         'vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
 
-    logger.info(f"""TOK RESULT of "ʈʂʰæ˧~ʈʂʰæ˧": {tokenizer.tokenize("ʈʂʰæ˧~ʈʂʰæ˧")}""")
+    # Test.
+    tokenizer.tokenize("ʈʂʰæ˧~ʈʂʰæ˧")
 
     feature_extractor = Wav2Vec2FeatureExtractor(
         feature_size=1, sampling_rate=16_000, padding_value=0.0, do_normalize=True, return_attention_mask=True
