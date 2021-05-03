@@ -377,9 +377,13 @@ def main():
 
     ## Language-specific data (here Na). It should be available from Elpis in a way or another.
     ## For the moment, it is a simple json file with 2 flat lists (graphemes and removables).
-    with open(data_dir / "language_data.json") as fd:
-        language_data = json.load(fd)
-    print(language_data)
+    language_data_path = data_dir / "language_data.json"
+    if language_data_path.exists():
+        with open(language_data_path) as fd:
+            language_data = json.load(fd)
+        logger.info(language_data)
+    else:
+        language_data = None
 
     def create_split(data_dir):
         """ Create annotations files for the train/dev/test splits. """
@@ -437,17 +441,18 @@ def main():
         naive_vocab_dict = {v: k for k, v in enumerate(vocab_list)}
         naive_vocab_dict["|"] = naive_vocab_dict[" "]
         del naive_vocab_dict[" "]
-        if language_data.get("graphemes"):
-            intelligent_vocab_dict = {token: token_id for token_id, token in enumerate(sorted(language_data["graphemes"], key=len))}
-            naive_vocab_set = set(naive_vocab_dict)
-            intelligent_vocab_set = set("".join(intelligent_vocab_dict))
-            naive_specific_chars = naive_vocab_set - intelligent_vocab_set
-            intelligent_specific_chars = intelligent_vocab_set - naive_vocab_set
-            if naive_specific_chars:
-                logger.warning(f"""Characters present ({len(naive_specific_chars)}) in data but absent in language data: {" ".join(sorted(naive_specific_chars))}""")
-            if intelligent_specific_chars:
-                logger.warning(f"""Characters present ({len(intelligent_specific_chars)}) in language data but absent in data: {" ".join(sorted(intelligent_specific_chars))}""")
-            vocab_dict = intelligent_vocab_dict
+        if language_data:
+            if language_data.get("graphemes"):
+                intelligent_vocab_dict = {token: token_id for token_id, token in enumerate(sorted(language_data["graphemes"], key=len))}
+                naive_vocab_set = set(naive_vocab_dict)
+                intelligent_vocab_set = set("".join(intelligent_vocab_dict))
+                naive_specific_chars = naive_vocab_set - intelligent_vocab_set
+                intelligent_specific_chars = intelligent_vocab_set - naive_vocab_set
+                if naive_specific_chars:
+                    logger.warning(f"""Characters present ({len(naive_specific_chars)}) in data but absent in language data: {" ".join(sorted(naive_specific_chars))}""")
+                if intelligent_specific_chars:
+                    logger.warning(f"""Characters present ({len(intelligent_specific_chars)}) in language data but absent in data: {" ".join(sorted(intelligent_specific_chars))}""")
+                vocab_dict = intelligent_vocab_dict
         else:
             vocab_dict = naive_vocab_dict
         vocab_dict["[UNK]"] = len(vocab_dict)
@@ -467,7 +472,7 @@ def main():
     tokenizer = ElpisTokenizer(
         'vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
 
-    print("RESULT:", tokenizer.tokenize("ʈʂʰæ˧~ʈʂʰæ˧"))
+    logger.info(f"""TOK RESULT of "ʈʂʰæ˧~ʈʂʰæ˧": {tokenizer.tokenize("ʈʂʰæ˧~ʈʂʰæ˧")}""")
 
     feature_extractor = Wav2Vec2FeatureExtractor(
         feature_size=1, sampling_rate=16_000, padding_value=0.0, do_normalize=True, return_attention_mask=True
