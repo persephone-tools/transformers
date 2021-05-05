@@ -32,9 +32,37 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 
 class ElpisTokenizer(Wav2Vec2CTCTokenizer):
+
     """
-    Special subclass to manage specific cases, like tokenization of variable-sized graphemes…
+    Constructs an ElpisTokenizer tokenizer.
+
+    This tokenizer inherits from :class:`~transformers.Wav2Vec2CTCTokenizer` which contains some of the main methods.
+    Users should refer to the superclass for more information regarding such methods.
+    The specificity of this specialized tokenizer is to manage complexe graphemes (when phonemes are coded on multiple characters) the same way as simple graphemes (see https://github.com/huggingface/transformers/issues/10942).
+    It was then managed in a different way by an official PR on the main repository (https://github.com/huggingface/transformers/pull/11349) but I keep for the moment this method based on regular expressions because I prefer semantically not to manage complex graphemes in the same way as "special tokens".
+    We should later test their method (and update our fork) to verify that everything works similarly.
+
+    Args:
+        vocab_file (:obj:`str`):
+            File containing the vocabulary.
+        bos_token (:obj:`str`, `optional`, defaults to :obj:`"<s>"`):
+            The beginning of sentence token.
+        eos_token (:obj:`str`, `optional`, defaults to :obj:`"</s>"`):
+            The end of sentence token.
+        unk_token (:obj:`str`, `optional`, defaults to :obj:`"<unk>"`):
+            The unknown token. A token that is not in the vocabulary cannot be converted to an ID and is set to be this
+            token instead.
+        pad_token (:obj:`str`, `optional`, defaults to :obj:`"<pad>"`):
+            The token used for padding, for example when batching sequences of different lengths.
+        word_delimiter_token (:obj:`str`, `optional`, defaults to :obj:`"|"`):
+            The token used for defining the end of a word.
+        do_lower_case (:obj:`bool`, `optional`, defaults to :obj:`False`):
+            Whether or not to accept lowercase input and lowercase the output when decoding.
+
+        **kwargs
+            Additional keyword arguments passed along to :class:`~transformers.PreTrainedTokenizer`
     """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pattern: re.Pattern = self.get_pattern()
@@ -375,7 +403,7 @@ def main():
 
     data_dir = Path(data_args.elpis_data_dir)
 
-    ## Language-specific data (here Na). It should be available from Elpis in a way or another.
+    ## Language-specific data. It should be available from Elpis in a way or another.
     ## For the moment, it is a simple json file with 2 flat lists (graphemes and removables).
     language_data_path = data_dir / "language_data.json"
     if language_data_path.exists():
