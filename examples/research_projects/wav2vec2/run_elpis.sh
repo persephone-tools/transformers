@@ -23,4 +23,5 @@ python transformers/examples/research_projects/wav2vec2/run_elpis.py \
 	--gradient_checkpointing \
 	--fp16 \
 	--group_by_length \
-	--do_train --do_eval
+	--do_train \
+	--do_eval
