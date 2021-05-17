@@ -625,8 +625,6 @@ def main():
         tokenizer=processor.feature_extractor,
     )
 
-    raise ## Tokenization test.
-
     # Training
     if training_args.do_train:
         if last_checkpoint is not None:
@@ -665,6 +663,19 @@ def main():
 
     return results
 
+def translate_arguments(*args, **kwargs):
+    """
+    Translate arguments into sys.argv to emulate a file call.
+    """
+    positional_arguments = list(args)
+    keyword_arguments = [f"--{key}" if value is True else f"--{key}={value}" for key, value in kwargs.items() if value]
+    sys.argv = positional_arguments + keyword_arguments
+    print("Emulated arguments (as a file call):\n", sys.argv)
+
+# Function call from inside Python (contrary to main).
+def train(*args, **kwargs):
+    translate_arguments(*args, **kwargs)
+    main()
 
 if __name__ == "__main__":
     main()
