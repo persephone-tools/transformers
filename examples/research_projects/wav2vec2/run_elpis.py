@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Set, Optional, Union, Callable
 
 import datasets
 import numpy as np
@@ -31,6 +31,75 @@ from transformers import (
 )
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 
+class ElpisTokenizer(Wav2Vec2CTCTokenizer):
+
+    """
+    Constructs an ElpisTokenizer tokenizer.
+
+    This tokenizer inherits from :class:`~transformers.Wav2Vec2CTCTokenizer` which contains some of the main methods.
+    Users should refer to the superclass for more information regarding such methods.
+    The specificity of this specialized tokenizer is to manage complexe graphemes (when phonemes are coded on multiple characters) the same way as simple graphemes (see https://github.com/huggingface/transformers/issues/10942).
+    It was then managed in a different way by an official PR on the main repository (https://github.com/huggingface/transformers/pull/11349) but I keep for the moment this method based on regular expressions because I prefer semantically not to manage complex graphemes in the same way as "special tokens".
+    We should later test their method (and update our fork) to verify that everything works similarly.
+
+    Args:
+        vocab_file (:obj:`str`):
+            File containing the vocabulary.
+        bos_token (:obj:`str`, `optional`, defaults to :obj:`"<s>"`):
+            The beginning of sentence token.
+        eos_token (:obj:`str`, `optional`, defaults to :obj:`"</s>"`):
+            The end of sentence token.
+        unk_token (:obj:`str`, `optional`, defaults to :obj:`"<unk>"`):
+            The unknown token. A token that is not in the vocabulary cannot be converted to an ID and is set to be this
+            token instead.
+        pad_token (:obj:`str`, `optional`, defaults to :obj:`"<pad>"`):
+            The token used for padding, for example when batching sequences of different lengths.
+        word_delimiter_token (:obj:`str`, `optional`, defaults to :obj:`"|"`):
+            The token used for defining the end of a word.
+        do_lower_case (:obj:`bool`, `optional`, defaults to :obj:`False`):
+            Whether or not to accept lowercase input and lowercase the output when decoding.
+
+        **kwargs
+            Additional keyword arguments passed along to :class:`~transformers.PreTrainedTokenizer`
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pattern: re.Pattern = self.get_pattern()
+
+    def get_pattern(self) -> re.Pattern:
+        exclusion_pattern = "|".join([self.unk_token, self.bos_token, self.eos_token, self.pad_token])
+        exclusion_pattern = re.sub(r"(\[|/)", r"\\\g<1>", exclusion_pattern)
+        logger.info(f"tokenizer – exclusion pattern: {exclusion_pattern}")
+        graphemes = [key for key in self.encoder.keys() if not re.match(exclusion_pattern, key, re.I)]
+        logger.info(f"tokenizer – graphemes: {graphemes}")
+        pattern = re.compile("|".join(sorted(graphemes, key=lambda grapheme: len(grapheme), reverse=True)))
+        logger.info(f"tokenizer – tokenization pattern: {pattern}")
+        return pattern
+
+    def _tokenize(self, text: str) -> List[str]:
+        """
+        Converts a string in a sequence of tokens (string), using the tokenizer.
+        """
+        if self.do_lower_case:
+            text = text.upper()
+        tokens = re.findall(self.pattern, text)
+        logger.info(f"tokenizer – tokens: {text} → {tokens}")
+        return tokens
+
+#############################################
+# Not sure if it is useful yet (the tokenizer function, later, will create a pattern with longest graphemes before the shortest ones, but maybe some linguists won’t give the graphemes in an classified way and this function could be useful for printing data or whatever…
+def classify_graphemes(graphemes: Union[List[str], Set[str]], by: Callable = len) -> Dict[int, List[str]]:
+    """
+    Returns a dict where keys are the criteria results of a function applied on graphemes, and values lists of graphemes under this criteria (length by default).
+    """
+    grapheme_dict = {}
+    for grapheme in graphemes:
+        grapheme_list = grapheme_dict.get(by(grapheme), [])
+        grapheme_list.append(grapheme)
+        grapheme_dict[by(grapheme)] = grapheme_list
+    return grapheme_dict
+#############################################
 
 if is_apex_available():
     from apex import amp
@@ -334,6 +403,16 @@ def main():
 
     data_dir = Path(data_args.elpis_data_dir)
 
+    ## Language-specific data. It should be available from Elpis in a way or another.
+    ## For the moment, it is a simple json file with 2 flat lists (graphemes and removables).
+    language_data_path = data_dir / "language_data.json"
+    if language_data_path.exists():
+        with open(language_data_path) as fd:
+            language_data = json.load(fd)
+        logger.info(f"Language data: {language_data}")
+    else:
+        language_data = None
+
     def create_split(data_dir):
         """ Create annotations files for the train/dev/test splits. """
 
@@ -366,7 +445,7 @@ def main():
 
         def make_text_col(batch):
             batch["text"] = batch['transcript']
-            batch["path"] = str(data_dir / 'original' / batch['audio_file_name'])
+            batch["path"] = str(data_dir / 'resampled' / batch['audio_file_name'])
             return batch
         ds = ds.map(make_text_col, remove_columns=['transcript', 'audio_file_name'])
         return ds
@@ -378,20 +457,37 @@ def main():
         vocab = list(set(all_text))
         return {"vocab": [vocab], "all_text": [all_text]}
 
-    vocab = dataset['train'].map(
-        extract_all_chars,
-        batched=True,
-        batch_size=-1,
-        keep_in_memory=True,
-        remove_columns=dataset['train'].column_names,
-    )
+    def create_vocabulary(dataset, language_data):
+        vocab = dataset['train'].map(
+            extract_all_chars,
+            batched=True,
+            batch_size=-1,
+            keep_in_memory=True,
+            remove_columns=dataset['train'].column_names,
+        )
+        vocab_list = list(set(vocab["vocab"][0]))
+        naive_vocab_dict = {v: k for k, v in enumerate(vocab_list)}
+        naive_vocab_dict["|"] = naive_vocab_dict[" "]
+        del naive_vocab_dict[" "]
+        if language_data:
+            if language_data.get("graphemes"):
+                intelligent_vocab_dict = {token: token_id for token_id, token in enumerate(sorted(language_data["graphemes"], key=len))}
+                naive_vocab_set = set(naive_vocab_dict)
+                intelligent_vocab_set = set("".join(intelligent_vocab_dict))
+                naive_specific_chars = naive_vocab_set - intelligent_vocab_set
+                intelligent_specific_chars = intelligent_vocab_set - naive_vocab_set
+                if naive_specific_chars:
+                    logger.warning(f"""Characters present ({len(naive_specific_chars)}) in data but absent in language data: {" ".join(sorted(naive_specific_chars))}""")
+                if intelligent_specific_chars:
+                    logger.warning(f"""Characters present ({len(intelligent_specific_chars)}) in language data but absent in data: {" ".join(sorted(intelligent_specific_chars))}""")
+                vocab_dict = intelligent_vocab_dict
+        else:
+            vocab_dict = naive_vocab_dict
+        vocab_dict["[UNK]"] = len(vocab_dict)
+        vocab_dict["[PAD]"] = len(vocab_dict)
+        return vocab_dict
 
-    vocab_list = list(set(vocab["vocab"][0]))
-    vocab_dict = {v: k for k, v in enumerate(vocab_list)}
-    vocab_dict["|"] = vocab_dict[" "]
-    del vocab_dict[" "]
-    vocab_dict["[UNK]"] = len(vocab_dict)
-    vocab_dict["[PAD]"] = len(vocab_dict)
+    vocab_dict = create_vocabulary(dataset, language_data)
 
     with open("vocab.json", "w") as vocab_file:
         json.dump(vocab_dict, vocab_file)
@@ -401,8 +497,12 @@ def main():
     # Distributed training:
     # The .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    tokenizer = Wav2Vec2CTCTokenizer(
+    tokenizer = ElpisTokenizer(
         'vocab.json', unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|',)
+
+    # Test.
+    tokenizer.tokenize("ʈʂʰæ˧~ʈʂʰæ˧")
+
     feature_extractor = Wav2Vec2FeatureExtractor(
         feature_size=1, sampling_rate=16_000, padding_value=0.0, do_normalize=True, return_attention_mask=True
     )
@@ -524,6 +624,8 @@ def main():
         eval_dataset=dataset['dev'] if training_args.do_eval else None,
         tokenizer=processor.feature_extractor,
     )
+
+    raise ## Tokenization test.
 
     # Training
     if training_args.do_train:
