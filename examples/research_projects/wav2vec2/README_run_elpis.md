@@ -49,4 +49,6 @@ Description of added functionality:
 - Output hypotheses and references are written to the experiment directory at
   each eval step with a timestamp, so the practictioner can see how the quality
   of the predictions are improving.
+- There's also this ElpisTokenizer object that Ben G has documented in the code
+  better, to handle multi-character phonemic units.
 
